@@ -1,0 +1,11 @@
+schema: spec-driven
+
+context: |
+  CampusClaw 是面向中小学的教研智能体课程项目。当前 change 把登录凭证改为 Authorization Bearer JWT。教师保存角色提示词并开关解题引导，学生按会话连续追问，回答用 SSE 返回并引用本班检索。
+  不做作业提交批改、错题讲解、关怀式对话、异步队列、SSO 与生产高可用。
+
+rules:
+  - 无规约不写代码
+  - 班级过滤必须在服务端按会话 class_id 执行
+  - 密码哈希存储，密钥仅环境变量
+  - Docker Compose 为标准启动方式

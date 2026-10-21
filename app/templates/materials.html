@@ -1,0 +1,102 @@
+{% extends "base.html" %}
+{% block title %}{{ class_name }}材料 · CampusClaw{% endblock %}
+{% block body %}
+{% with messages = get_flashed_messages() %}
+  {% if messages %}
+    <p class="alert"><i class="fa-solid fa-circle-check" aria-hidden="true"></i> {{ messages[0] }}</p>
+  {% endif %}
+{% endwith %}
+
+<section class="card panel">
+  <h1><i class="fa-solid fa-folder-open" aria-hidden="true"></i> {{ class_name }}材料</h1>
+  {% if role == 'teacher' %}
+  <p class="lead">下拉切换查看班级；上传会入库到当前正在查看的班级。</p>
+  <form class="class-switch" method="get" action="{{ url_for('materials.list_page') }}">
+    <label>当前查看
+      <span class="field">
+        <i class="fa-solid fa-users" aria-hidden="true"></i>
+        <select name="class_id" onchange="this.form.submit()">
+          {% for c in classes %}
+          <option value="{{ c.id }}" {% if c.id == class_id %}selected{% endif %}>{{ c.name }}</option>
+          {% endfor %}
+        </select>
+      </span>
+    </label>
+  </form>
+  <button class="btn btn-accent" type="button" id="open-upload">
+    <i class="fa-solid fa-cloud-arrow-up" aria-hidden="true"></i> 上传入库
+  </button>
+  {% else %}
+  <p class="lead"><i class="fa-solid fa-eye" aria-hidden="true"></i> 只读本班材料，班级由服务端会话决定。</p>
+  {% endif %}
+
+  {% if materials %}
+  <ul class="list">
+    {% for m in materials %}
+    <li class="item">
+      <div class="item-main">
+        <a href="{{ url_for('materials.detail_page', material_id=m.id) }}">
+          <i class="fa-regular fa-file-lines" aria-hidden="true"></i> {{ m.title }}
+        </a>
+        <span class="meta">
+          <i class="fa-solid fa-user-pen" aria-hidden="true"></i> {{ m.uploader }}
+          <i class="fa-regular fa-clock" aria-hidden="true"></i> {{ m.created_at }}
+        </span>
+      </div>
+      {% if role == 'teacher' %}
+      <p class="actions">
+        <a class="btn btn-ghost" href="{{ url_for('materials.edit_page', material_id=m.id) }}">
+          <i class="fa-solid fa-pen-to-square" aria-hidden="true"></i> 修改
+        </a>
+        <form class="inline" method="post" action="{{ url_for('materials.delete_material', material_id=m.id) }}" onsubmit="return confirm('确定删除「{{ m.title }}」？');">
+          <button class="btn btn-danger" type="submit">
+            <i class="fa-solid fa-trash" aria-hidden="true"></i> 删除
+          </button>
+        </form>
+      </p>
+      {% endif %}
+    </li>
+    {% endfor %}
+  </ul>
+  {% else %}
+  <p class="empty"><i class="fa-solid fa-inbox" aria-hidden="true"></i> 该班暂无材料。</p>
+  {% endif %}
+</section>
+
+{% if role == 'teacher' %}
+<dialog class="upload-dialog" id="upload-dialog">
+  <form class="dialog-inner" action="{{ url_for('materials.upload') }}" method="post" enctype="multipart/form-data">
+    <h2><i class="fa-solid fa-cloud-arrow-up" aria-hidden="true"></i> 上传到 {{ class_name }}</h2>
+    <input type="hidden" name="class_id" value="{{ class_id }}">
+    <label>标题
+      <span class="field">
+        <i class="fa-solid fa-pen" aria-hidden="true"></i>
+        <input name="title" placeholder="可选，默认用文件名">
+      </span>
+    </label>
+    <label>文件
+      <span class="field">
+        <i class="fa-solid fa-file-lines" aria-hidden="true"></i>
+        <input name="file" type="file" accept=".txt,.md" required>
+      </span>
+    </label>
+    <p class="dialog-actions">
+      <button class="btn btn-ghost" type="button" id="close-upload">取消</button>
+      <button class="btn btn-accent" type="submit">
+        <i class="fa-solid fa-upload" aria-hidden="true"></i> 确认上传
+      </button>
+    </p>
+  </form>
+</dialog>
+<script>
+  (function () {
+    var dialog = document.getElementById("upload-dialog");
+    var openBtn = document.getElementById("open-upload");
+    var closeBtn = document.getElementById("close-upload");
+    if (!dialog || !openBtn) return;
+    openBtn.addEventListener("click", function () { dialog.showModal(); });
+    if (closeBtn) closeBtn.addEventListener("click", function () { dialog.close(); });
+  })();
+</script>
+{% endif %}
+{% endblock %}

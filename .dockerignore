@@ -1,0 +1,10 @@
+.env
+uploads
+data
+.git
+frontend/node_modules
+frontend/dist
+**/.DS_Store
+*.db
+app
+scripts

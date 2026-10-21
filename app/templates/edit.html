@@ -1,0 +1,43 @@
+{% extends "base.html" %}
+{% block title %}修改资料 · CampusClaw{% endblock %}
+{% block body %}
+<p class="crumb">
+  <a class="btn btn-ghost" href="{{ url_for('materials.detail_page', material_id=material.id) }}">
+    <i class="fa-solid fa-arrow-left" aria-hidden="true"></i> 返回资料
+  </a>
+</p>
+<section class="card">
+  <h1><i class="fa-solid fa-pen-to-square" aria-hidden="true"></i> 修改资料</h1>
+  <p class="lead">可改标题、所属班级与知识库正文；也可重新上传 txt/md 覆盖正文。</p>
+  <form class="upload-plain" action="{{ url_for('materials.edit_save', material_id=material.id) }}" method="post" enctype="multipart/form-data">
+    <label>所属班级
+      <span class="field">
+        <i class="fa-solid fa-chalkboard" aria-hidden="true"></i>
+        <select name="class_id" required>
+          {% for c in classes %}
+          <option value="{{ c.id }}" {% if c.id == material.class_id %}selected{% endif %}>{{ c.name }}</option>
+          {% endfor %}
+        </select>
+      </span>
+    </label>
+    <label>标题
+      <span class="field">
+        <i class="fa-solid fa-pen" aria-hidden="true"></i>
+        <input name="title" value="{{ material.title }}" required>
+      </span>
+    </label>
+    <label>知识库正文
+      <textarea name="body" rows="12" required>{{ material.body_text or '' }}</textarea>
+    </label>
+    <label>替换文件（可选）
+      <span class="field">
+        <i class="fa-solid fa-file-arrow-up" aria-hidden="true"></i>
+        <input name="file" type="file" accept=".txt,.md">
+      </span>
+    </label>
+    <button class="btn btn-primary" type="submit">
+      <i class="fa-solid fa-floppy-disk" aria-hidden="true"></i> 保存修改
+    </button>
+  </form>
+</section>
+{% endblock %}

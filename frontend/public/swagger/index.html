@@ -1,0 +1,23 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8" />
+  <title>CampusClaw API</title>
+  <link rel="stylesheet" href="./swagger-ui.css" />
+</head>
+<body>
+<div id="swagger-ui"></div>
+<script src="./swagger-ui-bundle.js"></script>
+<script>
+window.ui = SwaggerUIBundle({
+  url: "/openapi.json",
+  dom_id: "#swagger-ui",
+  deepLinking: true,
+  persistAuthorization: true,
+  displayRequestDuration: true,
+  presets: [SwaggerUIBundle.presets.apis],
+  layout: "BaseLayout"
+});
+</script>
+</body>
+</html>

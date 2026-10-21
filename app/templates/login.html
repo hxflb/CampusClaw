@@ -1,0 +1,35 @@
+{% extends "base.html" %}
+{% block title %}登录 · CampusClaw{% endblock %}
+{% block body %}
+<section class="card login-card">
+  <div class="card-icon"><i class="fa-solid fa-lock" aria-hidden="true"></i></div>
+  <h1>进入本班知识库</h1>
+  <p class="lead">教师管理材料入库，学生只读本班列表。</p>
+  {% with messages = get_flashed_messages() %}
+    {% if messages %}
+      <p class="alert"><i class="fa-solid fa-circle-exclamation" aria-hidden="true"></i> {{ messages[0] }}</p>
+    {% endif %}
+  {% endwith %}
+  <form method="post" action="{{ url_for('auth.login_post') }}">
+    <label>用户名
+      <span class="field">
+        <i class="fa-solid fa-user" aria-hidden="true"></i>
+        <input name="username" autocomplete="username" required>
+      </span>
+    </label>
+    <label>密码
+      <span class="field">
+        <i class="fa-solid fa-key" aria-hidden="true"></i>
+        <input name="password" type="password" autocomplete="current-password" required>
+      </span>
+    </label>
+    <button class="btn btn-primary btn-block" type="submit">
+      <i class="fa-solid fa-right-to-bracket" aria-hidden="true"></i> 登录
+    </button>
+  </form>
+  <div class="hint">
+    <p><i class="fa-solid fa-circle-info" aria-hidden="true"></i> 预置账号</p>
+    <p>teacher_a / student_a1 / student_b1，密码均为 demo123</p>
+  </div>
+</section>
+{% endblock %}

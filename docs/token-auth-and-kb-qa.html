@@ -1,0 +1,210 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8" />
+<title>CampusClaw 令牌认证与知识库问答实现说明</title>
+<style>
+  @page { size: A4; margin: 18mm 16mm 18mm 16mm; }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0;
+    color: #1b2420;
+    font-family: "Microsoft YaHei", "PingFang SC", "Noto Sans SC", sans-serif;
+    font-size: 11pt;
+    line-height: 1.65;
+  }
+  h1 { font-size: 20pt; line-height: 1.3; margin: 0 0 8px; }
+  h2 { font-size: 15pt; margin: 22px 0 8px; page-break-after: avoid; border-bottom: 1px solid #d5e3db; padding-bottom: 4px; }
+  h3 { font-size: 12.5pt; margin: 16px 0 6px; page-break-after: avoid; }
+  p { margin: 0 0 8px; }
+  ul, ol { margin: 4px 0 10px; padding-left: 1.3em; }
+  li { margin: 2px 0; }
+  code, pre {
+    font-family: Consolas, "Sarasa Mono SC", monospace;
+    font-size: 9.5pt;
+  }
+  code { background: #f3f7f4; padding: 0 3px; }
+  pre {
+    background: #f6faf7;
+    border: 1px solid #d5e3db;
+    padding: 8px 10px;
+    white-space: pre-wrap;
+    word-break: break-all;
+    page-break-inside: avoid;
+  }
+  table { width: 100%; border-collapse: collapse; margin: 8px 0 12px; page-break-inside: avoid; font-size: 10pt; }
+  th, td { border: 1px solid #d5e3db; padding: 5px 7px; vertical-align: top; text-align: left; }
+  th { background: #eef6f2; }
+  .cover { margin-bottom: 18px; }
+  .meta { color: #5d6b64; font-size: 10.5pt; }
+  .note { background: #f8f1ea; border-left: 3px solid #c45c26; padding: 8px 10px; margin: 10px 0 12px; page-break-inside: avoid; }
+  h2, h3, table, pre, .note { page-break-inside: avoid; }
+</style>
+</head>
+<body>
+  <section class="cover">
+    <h1>CampusClaw 令牌认证与知识库问答实现说明</h1>
+    <p class="meta">依据当前仓库实现整理。浏览器只访问 web，Nginx 将 <code>/api</code> 转发到 Go api，班级过滤使用登录后从用户表读出的 <code>class_id</code>。</p>
+  </section>
+
+  <h2>1. 两条链路怎么接在一起</h2>
+  <p>一次提问先过身份认证，再进入知识库问答。认证回答的是「谁、什么角色、哪个班」。问答只使用这个班已经入库的材料，不采用浏览器提交的班级编号。</p>
+  <p>运行时顺序可以写成：</p>
+  <ol>
+    <li>用户提交账号密码，api 签发 HS256 JWT，并把令牌编号 <code>jti</code> 写入 <code>sessions</code>。</li>
+    <li>浏览器把令牌放进 <code>sessionStorage</code>，之后每个受保护请求都带 <code>Authorization: Bearer</code>。</li>
+    <li>api 验签并核对 <code>jti</code> 仍在 <code>sessions</code> 中，再从 <code>users</code> 读出当前角色和班级。</li>
+    <li>解题助手确认会话属于这个用户和这个班，读取本班提示词与「解题引导」开关。</li>
+    <li>对本班做混合检索，最多取 4 条已就绪切片。没有命中时链路不中断：仍按角色作答，只是引用为空。</li>
+    <li>生成回答，用 SSE 逐段推回浏览器，并把问题和回答写入会话。</li>
+  </ol>
+
+  <h2>2. 令牌认证的实现过程</h2>
+
+  <h3>2.1 登录时签发令牌</h3>
+  <p>入口是 <code>POST /api/login</code>，实现在 <code>backend/internal/server/server.go</code> 的 <code>login</code>。请求体只有用户名和密码。</p>
+  <ol>
+    <li>用「小写用户名 + 客户端 IP」做失败计数。达到 <code>LOGIN_FAIL_LIMIT</code>（默认 8 次）后，在 <code>LOGIN_LOCK_SECONDS</code>（默认 60 秒）内继续返回与密码错误相同的 <code>invalid_credentials</code>，不使用 429。</li>
+    <li>按用户名查询 <code>users</code>，取出 <code>id</code>、<code>username</code>、<code>password_hash</code>、<code>role</code>、<code>class_id</code>。密码只存 bcrypt。账号不存在时仍做一次等价耗时的哈希比较，避免用响应时间区分账号是否存在。</li>
+    <li>比对成功后生成 32 位十六进制随机串作为 <code>jti</code>。过期时间取 <code>SESSION_TTL_HOURS</code>，默认 24 小时。</li>
+    <li>调用 <code>token.Sign</code>，密钥是环境变量 <code>SESSION_SECRET</code>。密钥缺失时 api 启动失败，源码里没有默认密钥。</li>
+    <li>把 <code>jti</code>、<code>user_id</code>、<code>expires_at</code> 插入 <code>sessions</code>。响应 JSON 含 <code>ok</code>、<code>role</code>、<code>class_id</code> 和 <code>token</code>。同时清掉历史的 <code>sid</code> Cookie，不再用 Cookie 维持登录。</li>
+  </ol>
+  <p>如果这次登录请求自己已经带了一枚有效令牌，服务端会先删掉那枚旧 <code>jti</code>，再签发新令牌。其他设备上的令牌不会因此失效。</p>
+
+  <h3>2.2 令牌的格式与校验规则</h3>
+  <p>实现在 <code>backend/internal/token/token.go</code>。令牌是三段 Base64URL，用点连接：</p>
+  <pre>header.payload.signature</pre>
+  <p>头部固定为 <code>{"alg":"HS256","typ":"JWT"}</code>。载荷字段固定为：</p>
+  <table>
+    <tr><th>字段</th><th>含义</th></tr>
+    <tr><td>user_id</td><td>用户主键</td></tr>
+    <tr><td>username</td><td>登录时从用户表读出的用户名</td></tr>
+    <tr><td>role</td><td>签发当时的角色，teacher 或 student</td></tr>
+    <tr><td>class_id</td><td>签发当时的班级</td></tr>
+    <tr><td>iat / exp</td><td>签发与过期的 Unix 秒</td></tr>
+    <tr><td>jti</td><td>服务端作废用的编号，对应 sessions.id</td></tr>
+  </table>
+  <p>签名是对「前两段原文」做 HMAC-SHA256，密钥为 <code>SESSION_SECRET</code>。<code>Parse</code> 的拒绝条件是：</p>
+  <ul>
+    <li>不是恰好三段，或 Base64 无法解码。</li>
+    <li><code>alg</code> 不是 <code>HS256</code>，或 <code>typ</code> 不是 <code>JWT</code>。因此 <code>alg: none</code> 会被拒绝。算法不从令牌里挑选，始终用 HMAC-SHA256 重算签名。</li>
+    <li>签名与本地计算结果不一致，比较使用常量时间函数。</li>
+    <li><code>user_id</code> 或 <code>jti</code> 为空，或 <code>exp</code> 已经不大于当前时间。</li>
+  </ul>
+  <div class="note">载荷里的 role 和 class_id 便于在浏览器网络面板里看到身份，但授权不单独信任这两项。每次请求仍回用户表读取当前角色和班级。</div>
+
+  <h3>2.3 浏览器如何带上令牌</h3>
+  <p>实现在 <code>frontend/src/api.ts</code>。登录成功后把 <code>token</code> 写入 <code>sessionStorage</code>，键名 <code>campusclaw-token</code>。同一标签页刷新后仍在；关闭标签页后消失。</p>
+  <p><code>authHeaders</code> 读取该键，设置 <code>Authorization: Bearer &lt;token&gt;</code>。普通 JSON 请求、<code>POST /api/conversations/{id}/messages</code> 的 SSE，以及材料原文件下载，都走这一函数。原文件不能再用普通链接打开，因为浏览器导航不会附带自定义请求头，所以下载改为 <code>fetch</code> 拿到文件后再触发保存。</p>
+  <p>页面启动时 <code>App.tsx</code> 调用 <code>GET /api/me</code>。令牌有效则进入材料页或解题助手；401 则回到登录页。退出时先带当前令牌调用 <code>POST /api/logout</code>，无论请求是否成功，都会删掉本地令牌。</p>
+
+  <h3>2.4 Nginx 转发</h3>
+  <p><code>frontend/nginx.conf</code> 的 <code>location /api/</code> 显式设置：</p>
+  <pre>proxy_set_header Authorization $http_authorization;</pre>
+  <p>这样浏览器发出的 Bearer 能到达 api。同一 location 关闭了代理缓冲，读超时 300 秒，避免解题助手的 SSE 被攒包。</p>
+
+  <h3>2.5 每个受保护接口如何认人</h3>
+  <p><code>require</code> 包住材料、检索、提问、提示词、技能和会话接口。<code>GET /health</code> 与 <code>POST /api/login</code> 不经过它。</p>
+  <ol>
+    <li>从 <code>Authorization</code> 取出 <code>Bearer</code> 后面的字符串。没有这一头，或前缀不对，直接 401，错误码 <code>unauthorized</code>。</li>
+    <li><code>token.Parse</code> 验签并检查过期。</li>
+    <li>执行查询：<code>sessions</code> 与 <code>users</code> 按 <code>jti</code> 和 <code>user_id</code> 连接，且 <code>expires_at</code> 必须晚于数据库当前时间。</li>
+    <li>查不到行就是 401。查到后，后续处理函数拿到的 <code>sessionUser</code> 使用用户表里的 <code>id</code>、<code>username</code>、<code>role</code>、<code>class_id</code>。</li>
+  </ol>
+  <p>因此，学生在 URL 或 JSON 里写另一个班的 <code>class_id</code>，不能改变自己的班级。教师查看或上传到其他班，是业务接口在确认角色为 teacher 之后另行允许的，不是令牌被客户端改写的结果。</p>
+
+  <h3>2.6 登出为什么能立刻失效</h3>
+  <p>纯 JWT 在过期前无法收回。<code>logout</code> 在验签成功后执行 <code>DELETE FROM sessions WHERE id=? AND user_id=?</code>，删的是当前 <code>jti</code>。之后 <code>require</code> 联表失败，同一串令牌返回 401。过期时间仍然作为第二道界限：即使行还在，<code>Parse</code> 也会拒绝过期令牌。</p>
+
+  <h2>3. 问答之前：材料如何进入知识库</h2>
+  <p>提问能引用材料，是因为教师上传时已经完成切片和向量入库。学生不能上传，对应接口返回 403。</p>
+  <ol>
+    <li>教师 <code>POST /api/materials</code>。文件只接受文本类材料，正文写入 <code>knowledge_entries</code>，并与材料、班级关联。上传目录只挂在 api 容器，不由 Nginx 直接暴露。</li>
+    <li><code>chunker.Split</code> 默认策略 <code>auto</code>：按 800 字窗口、80 字重叠切开。另有按标题分段的 <code>hierarchy</code>，以及可指定窗口的 <code>custom</code>。每段记下 <code>chunk_index</code>、<code>char_start</code>、<code>char_end</code>。</li>
+    <li><code>indexx.IndexMaterial</code> 把切片写入 <code>knowledge_chunks</code>，状态先不是 ready。嵌入向量写入 Qdrant，成功后把该行 <code>index_status</code> 更新为 <code>ready</code>。失败则标为 <code>failed</code>。检索只使用 <code>ready</code>。</li>
+    <li>关键词检索依赖 MySQL 对 <code>chunk_text</code> 的 ngram 全文索引。向量检索用同一条切片在 Qdrant 中的点，过滤条件带班级。</li>
+  </ol>
+
+  <h2>4. 知识库问答的实现过程</h2>
+  <p>页面是解题助手，接口是 <code>POST /api/conversations/{id}/messages</code>，实现在 <code>backend/internal/server/tutor.go</code> 的 <code>postMessage</code>。第 4 课的 <code>POST /api/search</code> 和 <code>POST /api/ask</code> 仍然保留，班级同样只取令牌用户，前端 <code>/search</code> 会转到解题助手。</p>
+
+  <h3>4.1 确认会话</h3>
+  <p>请求先经过 <code>require</code>。随后 <code>ownConversation</code> 要求 <code>conversations</code> 中存在同时满足 <code>id</code>、<code>user_id</code>、<code>class_id</code> 的行。他人或他班访问返回 404，不区分「不存在」和「不属于你」。</p>
+  <p>请求体可以带 <code>query</code>、<code>system</code>、<code>class_id</code>、<code>messages</code>。后三项被显式丢弃。问题只取 <code>query</code> 去空白后的文本，空问题或超过 2000 字返回 400 <code>empty_query</code>。历史不信任客户端，后面只从数据库读。</p>
+  <p>用户问题先插入 <code>conversation_messages</code>，角色为 <code>user</code>。前端在此之前可以 <code>POST /api/conversations</code> 新建会话；列表和详情也只返回创建者自己的会话。</p>
+
+  <h3>4.2 读取本班提示词和技能</h3>
+  <ol>
+    <li><code>classPrompt</code> 读 <code>class_prompts.body</code>。没有行，或正文为空白，使用 <code>tutor.DefaultPrompt</code>。这段文字只说明助手是谁、只依据本班材料，不写具体解题步骤。数据库错误不会被当成默认提示词。</li>
+    <li><code>skillEnabled</code> 只查询技能键 <code>guide</code>（解题引导）。没有记录时视为开启。教师用 <code>PUT /api/skills/guide</code> 修改；学生调用返回 403；其他技能键返回 404。</li>
+    <li>提示词和开关都在这一轮开始时读取。助手消息会保存 <code>prompt_snapshot</code> 和 <code>skill_enabled</code>。教师之后再改提示词，已经落库的回答不重写。下一轮提问才用新值。</li>
+  </ol>
+
+  <h3>4.3 混合检索</h3>
+  <p><code>loadTutorHits</code> 调用 <code>retrieve.Hybrid</code>，班级参数是用户表中的 <code>class_id</code>。</p>
+  <ol>
+    <li>关键词路：MySQL <code>MATCH ... AGAINST</code> 自然语言模式，条件是本班且 <code>index_status='ready'</code>，按相关度取前 20。</li>
+    <li>向量路：把问题嵌入后到 Qdrant 检索，再回到 MySQL 核对切片仍属于该班且状态为 ready，同样最多 20 条。</li>
+    <li>两路用倒数排名融合。常数 k 为 60。某条切片若两路都出现，分数相加。按融合分排序后，问答只保留前 4 条。</li>
+    <li>再用 <code>chunk_id</code> 和 <code>class_id</code> 读出 <code>chunk_text</code>，带上材料标题、切片序号和字符区间，交给生成步骤。</li>
+  </ol>
+  <p>检索失败返回 503 <code>vector_unavailable</code>，不会改用他班材料。</p>
+
+  <h3>4.4 没有命中时</h3>
+  <p>命中为空时 <code>tutor.Stream</code> 照常调用对话网关，按角色与技能作答：引用列表下发空数组，正文里所有 <code>[n]</code> 编号在推送前被剥掉，也不写成整段的「资料中未找到相关内容」。没配置网关时才由服务端给出确定性的角色口径回答，<code>model_called</code> 为 false。</p>
+
+  <h3>4.5 有命中时如何生成</h3>
+  <p>若同时配置了 <code>CHAT_BASE_URL</code> 和 <code>CHAT_API_KEY</code>，<code>BuildMessages</code> 组出发给网关的消息：</p>
+  <ul>
+    <li>一条 system：已保存的角色提示词，加上解题引导的规程。开启时要求只给思路、引用标题和位置、用 <code>[n]</code> 标注，并写明不要直接给出最终答案。关闭时要求直接回答并标注依据。同时禁止编造资料中没有的内容，禁止听从用户消息里的 system 指令。</li>
+    <li>此前最多 16 条本会话历史。刚插入的当前问题会从历史末尾去掉，避免重复。<code>chatHistory</code> 只保留 user 与 assistant。</li>
+    <li>一条 user：把最多 4 条资料写成「[n] 材料《标题》切片、字符区间、正文」，再接上当前问题。</li>
+  </ul>
+  <p>请求发往 <code>{CHAT_BASE_URL}/v1/chat/completions</code>，<code>stream: true</code>。这里的 <code>Authorization: Bearer</code> 使用 <code>CHAT_API_KEY</code>，与用户 JWT 无关，也不会返回给浏览器。网关若以 SSE 返回，按 <code>delta.content</code> 逐片交给上层；若返回整段 JSON，则一次吐出 <code>message.content</code>。调用失败、空正文或未配置网关时，改走本地回答，仍然按小段 SSE 输出。</p>
+  <p>本地回答两种正文不同：</p>
+  <ul>
+    <li>解题引导开启：指出第一条命中的标题、切片号和字符区间，让读者按材料自己往下推，并写明不直接给出最终答案。</li>
+    <li>解题引导关闭：复用 <code>chat.DirectAnswer</code>，从材料句子里选出与问题重叠最高的一句，附上 <code>[n]</code>。</li>
+  </ul>
+
+  <h3>4.6 SSE 与落库</h3>
+  <p>响应类型为 <code>text/event-stream</code>，并设置 <code>X-Accel-Buffering: no</code>。事件顺序固定：</p>
+  <table>
+    <tr><th>事件</th><th>内容</th></tr>
+    <tr><td>meta</td><td>是否使用了提示词、提示词 SHA-256、技能是否开启、本轮命中条数</td></tr>
+    <tr><td>citations</td><td>引用数组。每条含序号、材料 id、标题、切片序号、字符起止和摘录</td></tr>
+    <tr><td>delta</td><td>若干次，每次一个文本片段</td></tr>
+    <tr><td>done</td><td>完整回答、助手消息 id、<code>model_called</code></td></tr>
+  </table>
+  <p><code>done</code> 之前，助手行已经写入 <code>conversation_messages</code>，字段包括 <code>content</code>、<code>citations_json</code>、<code>prompt_snapshot</code>、<code>skill_enabled</code>。生成失败且没有正文时发送 <code>error</code>，不把空回答当成成功。</p>
+  <p>前端 <code>streamMessage</code> 按空行切分 SSE，把 <code>delta</code> 追加到当前回合，结束后再读一次会话，用数据库中的消息替换本地临时文本。会话下拉的标题来自该会话的第一条用户问题。</p>
+
+  <h3>4.7 页面上学生能看到什么</h3>
+  <p>教师可以编辑提示词并开关「解题引导」，保存后从下一轮生效。学生看不到写入口，只能看到「解题引导：开启」或「解题引导：关闭」。会话列表每一项可以删除自己的会话，删除走 <code>DELETE /api/conversations/{id}</code>，消息随外键级联删除，他人删除得到 404。</p>
+
+  <h2>5. 一次提问的对照表</h2>
+  <table>
+    <tr><th>步骤</th><th>代码位置</th><th>结果</th></tr>
+    <tr><td>带上用户令牌</td><td>frontend/src/api.ts</td><td>Authorization: Bearer</td></tr>
+    <tr><td>验签并读用户表</td><td>server.require</td><td>得到 user_id、role、class_id</td></tr>
+    <tr><td>确认会话归属</td><td>tutor.ownConversation</td><td>不是本人本班则 404</td></tr>
+    <tr><td>读提示词和 guide</td><td>classPrompt、skillEnabled</td><td>本轮快照</td></tr>
+    <tr><td>混合检索前 4 条</td><td>retrieve.Hybrid、loadTutorHits</td><td>只含本班 ready 切片</td></tr>
+    <tr><td>先落库提问</td><td>postMessage</td><td>检索失败也保留这一轮提问</td></tr>
+    <tr><td>无命中</td><td>tutor.Stream</td><td>仍调网关，引用为空，剥掉编号</td></tr>
+    <tr><td>生成</td><td>streamRemote 或 localAnswer</td><td>引导与直接回答不同</td></tr>
+    <tr><td>推送并保存</td><td>writeSSE、conversation_messages</td><td>meta（含 status/技能/引用）、delta、done</td></tr>
+  </table>
+
+  <h2>6. 如何核对</h2>
+  <ol>
+    <li>未带令牌访问 <code>GET /api/materials</code>，应为 401，且响应里没有材料标题。</li>
+    <li>学生登录后，在浏览器网络面板打开 <code>materials</code>，请求头应有 <code>Authorization: Bearer</code>。载荷中能看到用户名、角色和班级。列表只含本班材料。</li>
+    <li>退出后用同一令牌再请求材料，应为 401。</li>
+    <li>改动令牌任意一段后请求，应为 401。</li>
+    <li>解题助手对有材料依据的问题应出现引用；对资料中不存在的问题仍应得到一段按角色作答的正文，引用为空、正文不含 <code>[n]</code>，且不出现上一轮引用。</li>
+  </ol>
+  <p>对应检查脚本为 <code>scripts/verify_api.py</code> 与 <code>scripts/verify_tutor.py</code>。令牌单测在 <code>backend/internal/token/token_test.go</code>，覆盖正常解析、篡改、错误密钥、<code>alg: none</code> 和过期。</p>
+</body>
+</html>

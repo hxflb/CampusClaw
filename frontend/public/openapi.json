@@ -1,0 +1,257 @@
+{
+  "openapi": "3.0.3",
+  "info": {
+    "title": "CampusClaw API",
+    "version": "1.0.0",
+    "description": "登录后除 /health、/api/login、本文件和 Swagger 页面外，请求都要带 Authorization: Bearer。班级以用户表为准，请求里的 class_id 不能代替会话班级。"
+  },
+  "components": {
+    "securitySchemes": {
+      "bearerAuth": {
+        "type": "http",
+        "scheme": "bearer",
+        "bearerFormat": "JWT",
+        "description": "POST /api/login 返回的 token"
+      }
+    },
+    "schemas": {
+      "Error": {
+        "type": "object",
+        "required": ["error"],
+        "properties": { "error": { "type": "string" } }
+      }
+    }
+  },
+  "paths": {
+    "/health": {
+      "get": {
+        "summary": "存活检查",
+        "security": [],
+        "responses": {
+          "200": { "description": "{\"status\":\"ok\"}，不访问数据库" }
+        }
+      }
+    },
+    "/api/login": {
+      "post": {
+        "summary": "登录并签发访问令牌",
+        "security": [],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "required": ["username", "password"],
+                "properties": {
+                  "username": { "type": "string" },
+                  "password": { "type": "string" }
+                }
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": { "description": "ok、role、class_id、token" },
+          "401": { "description": "invalid_credentials", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/Error" } } } }
+        }
+      }
+    },
+    "/api/logout": {
+      "post": {
+        "summary": "登出并作废当前令牌",
+        "security": [{ "bearerAuth": [] }],
+        "responses": { "200": { "description": "{\"ok\":true}。之后同一令牌返回 401" } }
+      }
+    },
+    "/api/me": {
+      "get": {
+        "summary": "当前用户",
+        "security": [{ "bearerAuth": [] }],
+        "responses": {
+          "200": { "description": "user_id、username、role、class_id，来自用户表" },
+          "401": { "description": "unauthorized" }
+        }
+      }
+    },
+    "/api/materials": {
+      "get": {
+        "summary": "材料列表",
+        "security": [{ "bearerAuth": [] }],
+        "parameters": [
+          { "name": "class_id", "in": "query", "schema": { "type": "integer" }, "description": "仅教师可切换到已存在的班级。学生忽略该参数" },
+          { "name": "q", "in": "query", "schema": { "type": "string" } }
+        ],
+        "responses": {
+          "200": { "description": "items：id、title、class_id、uploader、created_at" },
+          "401": { "description": "unauthorized" }
+        }
+      },
+      "post": {
+        "summary": "教师上传",
+        "security": [{ "bearerAuth": [] }],
+        "requestBody": { "required": true, "content": { "multipart/form-data": { "schema": { "type": "object", "properties": { "title": { "type": "string" }, "class_id": { "type": "integer" }, "file": { "type": "string", "format": "binary" } } } } } },
+        "responses": { "201": { "description": "material_id" }, "403": { "description": "学生 forbidden" } }
+      }
+    },
+    "/api/materials/{id}": {
+      "get": {
+        "summary": "材料详情",
+        "security": [{ "bearerAuth": [] }],
+        "parameters": [{ "name": "id", "in": "path", "required": true, "schema": { "type": "integer" } }],
+        "responses": { "200": { "description": "标题与正文" }, "404": { "description": "不存在或学生跨班" } }
+      }
+    },
+    "/api/search": {
+      "post": {
+        "summary": "检索本班切片",
+        "security": [{ "bearerAuth": [] }],
+        "requestBody": {
+          "required": true,
+          "content": { "application/json": { "schema": { "type": "object", "required": ["query"], "properties": { "query": { "type": "string" }, "mode": { "type": "string", "enum": ["hybrid", "keyword", "vector"] }, "class_id": { "type": "integer", "description": "丢弃" } } } } }
+        },
+        "responses": { "200": { "description": "mode 与 hits。班级只取令牌用户" }, "401": { "description": "unauthorized" } }
+      }
+    },
+    "/api/ask": {
+      "post": {
+        "summary": "单次问答",
+        "security": [{ "bearerAuth": [] }],
+        "requestBody": {
+          "required": true,
+          "content": { "application/json": { "schema": { "type": "object", "properties": { "query": { "type": "string" }, "class_id": { "type": "integer", "description": "丢弃" } } } } }
+        },
+        "responses": { "200": { "description": "answer 与 citations。无命中不编造出处" } }
+      }
+    },
+    "/api/prompt": {
+      "get": {
+        "summary": "读取本班提示词",
+        "security": [{ "bearerAuth": [] }],
+        "responses": { "200": { "description": "body、prompt_sha256" } }
+      },
+      "put": {
+        "summary": "教师保存提示词",
+        "security": [{ "bearerAuth": [] }],
+        "requestBody": { "required": true, "content": { "application/json": { "schema": { "type": "object", "required": ["body"], "properties": { "body": { "type": "string" }, "class_id": { "type": "integer", "description": "丢弃" } } } } } },
+        "responses": { "200": { "description": "从下一轮提问生效" }, "403": { "description": "学生 forbidden" } }
+      }
+    },
+    "/api/skills": {
+      "get": {
+        "summary": "列出技能",
+        "security": [{ "bearerAuth": [] }],
+        "responses": { "200": { "description": "items：key=guide、name、enabled" } }
+      }
+    },
+    "/api/skills/{key}": {
+      "put": {
+        "summary": "教师开关技能",
+        "security": [{ "bearerAuth": [] }],
+        "parameters": [{ "name": "key", "in": "path", "required": true, "schema": { "type": "string", "example": "guide" } }],
+        "requestBody": { "required": true, "content": { "application/json": { "schema": { "type": "object", "required": ["enabled"], "properties": { "enabled": { "type": "boolean" } } } } } },
+        "responses": { "200": { "description": "enabled" }, "403": { "description": "学生" }, "404": { "description": "不是 guide" } }
+      }
+    },
+    "/api/conversations": {
+      "get": { "summary": "我的会话", "security": [{ "bearerAuth": [] }], "responses": { "200": { "description": "items：id、created_at、preview" } } },
+      "post": { "summary": "新建会话", "security": [{ "bearerAuth": [] }], "responses": { "200": { "description": "id" } } }
+    },
+    "/api/conversations/{id}": {
+      "get": {
+        "summary": "读取会话消息",
+        "security": [{ "bearerAuth": [] }],
+        "parameters": [{ "name": "id", "in": "path", "required": true, "schema": { "type": "integer" } }],
+        "responses": { "200": { "description": "messages" }, "404": { "description": "不是创建者" } }
+      },
+      "delete": {
+        "summary": "删除自己的会话",
+        "security": [{ "bearerAuth": [] }],
+        "parameters": [{ "name": "id", "in": "path", "required": true, "schema": { "type": "integer" } }],
+        "responses": { "200": { "description": "消息级联删除" }, "404": { "description": "他人" } }
+      }
+    },
+    "/api/conversations/{id}/agent": {
+      "put": {
+        "summary": "更换未开始会话的智能体",
+        "security": [{ "bearerAuth": [] }],
+        "parameters": [{ "name": "id", "in": "path", "required": true, "schema": { "type": "integer" } }],
+        "requestBody": { "required": true, "content": { "application/json": { "schema": { "type": "object", "required": ["agent_id"], "properties": { "agent_id": { "type": "integer" }, "class_id": { "type": "integer", "description": "丢弃" } } } } } },
+        "responses": { "200": { "description": "仍是原会话，agent_id 已更新" }, "404": { "description": "不是创建者，或智能体未启用" }, "409": { "description": "会话已有消息" } }
+      }
+    },
+    "/api/conversations/{id}/messages": {
+      "post": {
+        "summary": "流式提问",
+        "security": [{ "bearerAuth": [] }],
+        "parameters": [{ "name": "id", "in": "path", "required": true, "schema": { "type": "integer" } }],
+        "requestBody": {
+          "required": true,
+          "content": { "application/json": { "schema": { "type": "object", "required": ["query"], "properties": { "query": { "type": "string" }, "class_id": { "type": "integer", "description": "丢弃" }, "system": { "type": "string", "description": "丢弃" }, "messages": { "type": "array", "description": "丢弃，历史只读数据库" } } } } }
+        },
+        "responses": {
+          "200": { "description": "text/event-stream：meta（含 tool_calls）、citations、delta、done。无命中时正文为资料中未找到相关内容。提示词和技能取自已启用智能体。工具文本作为用户消息中的数据" },
+          "400": { "description": "empty_query 或 no_agent" },
+          "404": { "description": "会话不属于当前用户，或智能体不可用" }
+        }
+      }
+    },
+    "/api/agents": {
+      "get": { "summary": "列出本班智能体", "description": "教师看到全部。学生只看到已启用的。", "security": [{ "bearerAuth": [] }], "responses": { "200": { "description": "items：id、name、prompt、enabled、skill_ids、material_ids、guide" } } },
+      "post": {
+        "summary": "教师创建智能体",
+        "security": [{ "bearerAuth": [] }],
+        "requestBody": { "required": true, "content": { "application/json": { "schema": { "type": "object", "required": ["name", "prompt", "enabled"], "properties": { "name": { "type": "string" }, "prompt": { "type": "string" }, "enabled": { "type": "boolean" }, "skill_ids": { "type": "array", "items": { "type": "integer" }, "description": "本班技能文件编号" }, "material_ids": { "type": "array", "items": { "type": "integer" } }, "class_id": { "type": "integer", "description": "丢弃" } } } } } },
+        "responses": { "200": { "description": "新建的智能体" }, "400": { "description": "bad_request 或 name_taken" }, "403": { "description": "学生" }, "404": { "description": "技能或材料不属于本班" } }
+      }
+    },
+    "/api/agents/{id}": {
+      "put": {
+        "summary": "教师保存智能体",
+        "security": [{ "bearerAuth": [] }],
+        "parameters": [{ "name": "id", "in": "path", "required": true, "schema": { "type": "integer" } }],
+        "responses": { "200": { "description": "保存后的智能体" }, "403": { "description": "学生" }, "404": { "description": "不是本班，或技能、材料无效" } }
+      }
+    },
+    "/api/students": {
+      "get": { "summary": "教师列出本班学生", "security": [{ "bearerAuth": [] }], "responses": { "200": { "description": "items：username" }, "403": { "description": "学生" } } }
+    },
+    "/api/skill-files": {
+      "get": { "summary": "列出本班技能文件", "description": "学生只看到已启用的。", "security": [{ "bearerAuth": [] }], "responses": { "200": { "description": "items：id、name、trigger、subject、tool、enabled、body、source" } } },
+      "post": {
+        "summary": "教师新建技能文件",
+        "security": [{ "bearerAuth": [] }],
+        "requestBody": { "required": true, "content": { "application/json": { "schema": { "type": "object", "required": ["source"], "properties": { "source": { "type": "string" }, "class_id": { "type": "integer", "description": "丢弃" } } } } } },
+        "responses": { "200": { "description": "新建的技能文件" }, "400": { "description": "bad_skill、name_taken 或 mcp_tool_denied" }, "403": { "description": "学生" } }
+      }
+    },
+    "/api/skill-files/{id}": {
+      "put": { "summary": "教师保存技能文件", "security": [{ "bearerAuth": [] }], "parameters": [{ "name": "id", "in": "path", "required": true, "schema": { "type": "integer" } }], "responses": { "200": { "description": "保存后的技能文件" }, "403": { "description": "学生" }, "404": { "description": "不是本班" } } },
+      "delete": { "summary": "教师删除技能文件", "security": [{ "bearerAuth": [] }], "parameters": [{ "name": "id", "in": "path", "required": true, "schema": { "type": "integer" } }], "responses": { "200": { "description": "已删除" }, "403": { "description": "学生" }, "404": { "description": "不是本班" } } }
+    },
+    "/api/skill-files/{id}/enabled": {
+      "put": { "summary": "教师开关技能文件", "security": [{ "bearerAuth": [] }], "parameters": [{ "name": "id", "in": "path", "required": true, "schema": { "type": "integer" } }], "responses": { "200": { "description": "enabled" }, "403": { "description": "学生" }, "404": { "description": "不是本班" } } }
+    },
+    "/api/mcp/servers": {
+      "get": { "summary": "教师列出本班 MCP 服务器", "description": "响应不含令牌。", "security": [{ "bearerAuth": [] }], "responses": { "200": { "description": "items：id、name、base_url、connected、tools" }, "403": { "description": "学生" } } },
+      "post": {
+        "summary": "教师登记 MCP 服务器",
+        "security": [{ "bearerAuth": [] }],
+        "requestBody": { "required": true, "content": { "application/json": { "schema": { "type": "object", "required": ["name", "base_url"], "properties": { "name": { "type": "string" }, "base_url": { "type": "string" }, "token": { "type": "string", "description": "即使传入也会丢弃，令牌只读服务端环境变量" } } } } } },
+        "responses": { "201": { "description": "id、name、base_url、connected、tools。没有令牌字段" }, "400": { "description": "bad_request 或 name_taken" }, "403": { "description": "学生" } }
+      }
+    },
+    "/api/mcp/servers/{id}/connect": {
+      "post": { "summary": "教师连接并缓存工具", "security": [{ "bearerAuth": [] }], "parameters": [{ "name": "id", "in": "path", "required": true, "schema": { "type": "integer" } }], "responses": { "200": { "description": "connected 与 tools" }, "403": { "description": "学生" }, "404": { "description": "不是本班" }, "502": { "description": "mcp_unavailable，带 message。不改变检索和对话" } } }
+    },
+    "/api/mcp/servers/{id}/disconnect": {
+      "post": { "summary": "教师断开并清空工具缓存", "security": [{ "bearerAuth": [] }], "parameters": [{ "name": "id", "in": "path", "required": true, "schema": { "type": "integer" } }], "responses": { "200": { "description": "connected 为 false，tools 为空" }, "403": { "description": "学生" }, "404": { "description": "不是本班" } } }
+    },
+    "/api/mcp/servers/{id}": {
+      "delete": { "summary": "教师删除 MCP 服务器", "security": [{ "bearerAuth": [] }], "parameters": [{ "name": "id", "in": "path", "required": true, "schema": { "type": "integer" } }], "responses": { "200": { "description": "deleted" }, "403": { "description": "学生" }, "404": { "description": "不是本班" } } }
+    },
+    "/api/mcp/audit": {
+      "get": { "summary": "教师查看本班 MCP 调用审计", "security": [{ "bearerAuth": [] }], "responses": { "200": { "description": "items：tool、status、username、created_at" }, "403": { "description": "学生" } } }
+    }
+  }
+}
